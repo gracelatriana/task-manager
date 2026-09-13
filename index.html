@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Task Manager</title>
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v=2">
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
 </head>
@@ -12,7 +12,7 @@
   <header>
     <div class="brand">
       <h1>&#10024; Task Manager</h1>
-      <p class="subtitle">Atur task kamu dengan cantik &amp; rapi</p>
+      <p class="subtitle">Atur task kamu dengan cantik &amp; rapi &#8226; v2 alarm</p>
     </div>
     <button id="themeToggle" title="Ganti Mode Terang / Gelap">
       <span id="themeIcon">&#9788;</span>
@@ -119,6 +119,20 @@
 
   <div id="toast" class="toast"></div>
 
-  <script src="app.js"></script>
+  <div id="alarmModal" class="alarm-modal" hidden>
+    <div class="alarm-box">
+      <div class="alarm-icon">&#9203;</div>
+      <h2 id="alarmTitle">Alarm Deadline</h2>
+      <h3 id="alarmTaskTitle" class="alarm-task-title"></h3>
+      <p id="alarmMsg"></p>
+      <p id="alarmHint" class="alarm-hint">Tekan &#128276; Bunyikan Suara supaya alarm berbunyi di HP.</p>
+      <div class="alarm-actions">
+        <button id="alarmSound" class="alarm-sound-btn">&#128276; Bunyikan Suara</button>
+        <button id="alarmDone" class="alarm-done-btn">&#10003; DONE</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js?v=2"></script>
 </body>
 </html>

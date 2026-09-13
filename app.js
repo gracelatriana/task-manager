@@ -67,9 +67,14 @@
   let audioCtx = null;
   function ensureAudio() {
     const AC = window.AudioContext || window.webkitAudioContext;
-    if (!AC) return;
-    if (!audioCtx) audioCtx = new AC();
-    if (audioCtx.state === 'suspended') audioCtx.resume();
+    if (!AC) return Promise.resolve(false);
+    if (!audioCtx) {
+      try { audioCtx = new AC(); } catch (e) { return Promise.resolve(false); }
+    }
+    if (audioCtx.state === 'suspended') {
+      return audioCtx.resume().then(() => true).catch(() => false);
+    }
+    return Promise.resolve(true);
   }
   function beep(freq, startTime, dur, vol = 0.35) {
     if (!audioCtx) return;
@@ -84,19 +89,137 @@
     osc.start(startTime);
     osc.stop(startTime + dur + 0.05);
   }
-  function playAlarm() {
-    try {
-      ensureAudio();
-      if (!audioCtx) return;
-      const t0 = audioCtx.currentTime;
-      for (let i = 0; i < 4; i++) {
-        const start = t0 + i * 0.55;
-        beep(987.77, start, 0.32, 0.38);
-        beep(659.25, start + 0.18, 0.32, 0.32);
-      }
-    } catch (e) {}
+  function vibrateAlarm() {
+    if (navigator.vibrate) navigator.vibrate([200, 100, 200, 100, 350]);
   }
-  document.addEventListener('pointerdown', ensureAudio, { once: true });
+  function stopVibration() {
+    if (navigator.vibrate) navigator.vibrate(0);
+  }
+  function playAlarmChime() {
+    vibrateAlarm();
+    ensureAudio().then(active => {
+      if (!audioCtx || !active) { updateAlarmHint(); return; }
+      const t0 = audioCtx.currentTime;
+      try {
+        for (let i = 0; i < 4; i++) {
+          const start = t0 + i * 0.55;
+          beep(987.77, start, 0.32, 0.38);
+          beep(659.25, start + 0.18, 0.32, 0.32);
+        }
+      } catch (e) {}
+    });
+  }
+  function unlockAndRing() {
+    ensureAudio().then(active => {
+      if (active && alarmState.ringing) startAlarmSound();
+      updateAlarmHint();
+    });
+  }
+  document.addEventListener('pointerdown', unlockAndRing);
+  document.addEventListener('touchstart', unlockAndRing);
+  document.addEventListener('keydown', unlockAndRing);
+
+  // ---- Alarm Overlay ----
+  const alarmModal = $('alarmModal');
+  const alarmDoneBtn = $('alarmDone');
+  const alarmSoundBtn = $('alarmSound');
+  const alarmTaskTitleEl = $('alarmTaskTitle');
+  const hasAlarmUI = !!(alarmModal && alarmDoneBtn);
+  const alarmTitleEl = hasAlarmUI ? $('alarmTitle') : null;
+  const alarmMsgEl = hasAlarmUI ? $('alarmMsg') : null;
+  const alarmHintEl = hasAlarmUI ? $('alarmHint') : null;
+  const alarmQueue = [];
+  const alarmState = { ringing: false, current: null };
+  let alarmSoundTimer = null;
+
+  function updateAlarmHint() {
+    if (!hasAlarmUI) return;
+    const active = !!(audioCtx && audioCtx.state === 'running');
+    alarmHintEl.hidden = active || !alarmState.ringing;
+  }
+
+  function startAlarmSound() {
+    stopAlarmSound();
+    playAlarmChime();
+    alarmSoundTimer = setInterval(playAlarmChime, 2500);
+  }
+  function stopAlarmSound() {
+    if (alarmSoundTimer) { clearInterval(alarmSoundTimer); alarmSoundTimer = null; }
+    stopVibration();
+  }
+  function showAlarm(title, taskName, message) {
+    if (!hasAlarmUI) {
+      playAlarmChime();
+      showToast((taskName ? taskName + ': ' : '') + message, 'reminder');
+      return;
+    }
+    alarmTitleEl.textContent = title;
+    alarmTaskTitleEl.textContent = taskName;
+    alarmMsgEl.textContent = message;
+    alarmModal.hidden = false;
+    startAlarmSound();
+    updateAlarmHint();
+  }
+  function hideAlarm() {
+    if (alarmModal) alarmModal.hidden = true;
+    stopAlarmSound();
+    updateAlarmHint();
+  }
+  function ringNext() {
+    if (alarmState.ringing) return;
+    const next = alarmQueue.shift();
+    if (!next) { hideAlarm(); return; }
+    alarmState.ringing = true;
+    alarmState.current = next;
+    showAlarm(next.title, next.name, next.message);
+    if ('Notification' in window && Notification.permission === 'granted') {
+      try {
+        new Notification(next.title, { tag: 'alarm-' + next.taskId, body: next.name });
+      } catch (e) {}
+    }
+  }
+  function queueAlarm(task, type) {
+    const overdue = type === 'overdue';
+    alarmQueue.push({
+      taskId: task.id,
+      title: overdue ? 'Deadline Terlewat' : 'Reminder Deadline',
+      name: task.title,
+      message: overdue
+        ? `Task ini sudah melewati deadline. Alarm akan berhenti setelah kamu menekan DONE.`
+        : `Deadline dalam ${task.reminderMinutes} menit. Alarm akan berhenti setelah kamu menekan DONE.`
+    });
+    ringNext();
+  }
+  function closeTaskNotifications(current) {
+    if (!current || !('serviceWorker' in navigator)) return;
+    navigator.serviceWorker.getRegistration().then(reg => {
+      if (!reg) return;
+      reg.getNotifications({ tag: 'alarm-' + current.taskId }).then(list => list.forEach(n => n.close()));
+    }).catch(() => {});
+  }
+  function stopCurrentAlarm() {
+    alarmState.ringing = false;
+    alarmState.current = null;
+    ringNext();
+  }
+  if (alarmDoneBtn) alarmDoneBtn.addEventListener('click', () => {
+    const current = alarmState.current;
+    if (current) {
+      const idx = allTasks.findIndex(t => t.id === current.taskId);
+      if (idx !== -1) {
+        allTasks[idx].status = 'done';
+        clearReminder(current.taskId);
+        saveTasks(allTasks);
+        showToast('Task selesai!');
+      }
+    }
+    closeTaskNotifications(current);
+    stopCurrentAlarm();
+  });
+  if (alarmSoundBtn) alarmSoundBtn.addEventListener('click', () => {
+    unlockAndRing();
+    showToast('Alarm dibunyikan.');
+  });
 
   // ---- Reminder ----
   function clearReminder(id) {
@@ -109,13 +232,22 @@
       saveTasks(allTasks);
     }
   }
-  function fireReminder(task) {
-    playAlarm();
-    showToast(`Reminder: "${task.title}" deadline dalam ${task.reminderMinutes} menit!`, 'reminder');
-    if (Notification.permission === 'granted') {
-      new Notification('Task Reminder', { body: `"${task.title}" deadline dalam ${task.reminderMinutes} menit!` });
-    }
+  function fireReminder(task, type = 'upcoming') {
+    queueAlarm(task, type);
     markReminded(task.id);
+  }
+  function checkDueReminders() {
+    const now = Date.now();
+    allTasks.forEach(t => {
+      if (!t.deadline || t.status === 'done' || t.reminded) return;
+      const deadline = new Date(t.deadline).getTime();
+      if (deadline <= now) {
+        fireReminder(t, 'overdue');
+      } else {
+        const remindAt = deadline - (t.reminderMinutes || 30) * 60 * 1000;
+        if (remindAt <= now) fireReminder(t, 'upcoming');
+      }
+    });
   }
   function scheduleReminder(task) {
     clearReminder(task.id);
@@ -303,7 +435,25 @@
   initTheme();
   db.ref("tasks").on("value", snap => {
     allTasks = snap.val() || [];
+    checkDueReminders();
     allTasks.forEach(scheduleReminder);
     render();
   });
+
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) {
+      checkDueReminders();
+      allTasks.forEach(scheduleReminder);
+      render();
+    }
+  });
+  window.addEventListener('focus', () => {
+    checkDueReminders();
+    allTasks.forEach(scheduleReminder);
+  });
+  window.addEventListener('online', () => {
+    checkDueReminders();
+    allTasks.forEach(scheduleReminder);
+  });
+  setInterval(checkDueReminders, 30000);
 })();
