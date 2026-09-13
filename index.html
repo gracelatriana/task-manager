@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Task Manager</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <h1>&#10024; Task Manager</h1>
+      <p class="subtitle">Atur task kamu dengan cantik &amp; rapi</p>
+    </div>
+    <button id="themeToggle" title="Ganti Mode Terang / Gelap">
+      <span id="themeIcon">&#9788;</span>
+    </button>
+  </header>
+
+  <main>
+    <section class="add-task-section">
+      <h2>&#128203; Tambah Task</h2>
+      <form id="taskForm">
+        <div class="form-row">
+          <div class="field">
+            <label for="taskTitle">Judul Task</label>
+            <input type="text" id="taskTitle" placeholder="Misalnya: Belajar JavaScript..." required>
+          </div>
+          <div class="field">
+            <label for="taskDesc">Deskripsi <small>(opsional)</small></label>
+            <input type="text" id="taskDesc" placeholder="Tambahkan detail task...">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="field">
+            <label for="taskPriority">Prioritas</label>
+            <select id="taskPriority">
+              <option value="low">&#129337;&#127995; Rendah</option>
+              <option value="medium" selected>&#129352; Sedang</option>
+              <option value="high">&#128293; Tinggi</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="taskStatus">Status</label>
+            <select id="taskStatus">
+              <option value="todo">&#128218; Todo</option>
+              <option value="in-progress">&#128232; In Progress</option>
+              <option value="done">&#9989; Done</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="field">
+            <label for="taskDeadline">Deadline</label>
+            <input type="datetime-local" id="taskDeadline">
+          </div>
+          <div class="field">
+            <label for="taskReminder">Reminder <small>(menit sebelum deadline)</small></label>
+            <input type="number" id="taskReminder" min="1" max="1440" value="30">
+          </div>
+        </div>
+        <button type="submit" class="btn-add">&#10133; Tambah Task</button>
+      </form>
+    </section>
+
+    <section class="filter-section">
+      <h2>&#128269; Filter Task</h2>
+      <div class="filter-row">
+        <select id="filterStatus">
+          <option value="all">Semua Status</option>
+          <option value="todo">Todo</option>
+          <option value="in-progress">In Progress</option>
+          <option value="done">Done</option>
+        </select>
+        <select id="filterPriority">
+          <option value="all">Semua Prioritas</option>
+          <option value="high">Tinggi</option>
+          <option value="medium">Sedang</option>
+          <option value="low">Rendah</option>
+        </select>
+        <input type="text" id="filterSearch" placeholder="Cari task...">
+      </div>
+    </section>
+
+    <section class="stats-section">
+      <div class="stat" id="statTodo">
+        <span class="stat-icon">&#128218;</span>
+        <span class="stat-num">0</span>
+        <span class="stat-label">Todo</span>
+      </div>
+      <div class="stat" id="statProgress">
+        <span class="stat-icon">&#128232;</span>
+        <span class="stat-num">0</span>
+        <span class="stat-label">In Progress</span>
+      </div>
+      <div class="stat" id="statDone">
+        <span class="stat-icon">&#127881;</span>
+        <span class="stat-num">0</span>
+        <span class="stat-label">Done</span>
+      </div>
+    </section>
+
+    <section class="task-list-section">
+      <div class="section-head">
+        <h2>&#128278; Daftar Task</h2>
+        <p id="progressText" class="progress-text">0% selesai</p>
+      </div>
+      <div class="progress-wrap">
+        <div class="progress-track">
+          <div id="progressBar" class="progress-bar" style="width:0%"></div>
+        </div>
+      </div>
+      <div id="taskList" class="task-list"></div>
+      <p id="emptyMsg" class="empty-msg">&#127757; Belum ada task. Yuk tambah task pertama kamu!</p>
+    </section>
+  </main>
+
+  <div id="toast" class="toast"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
