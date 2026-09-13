@@ -1,7 +1,7 @@
 (() => {
-  const STORAGE_KEY = 'taskManagerTasks';
   const THEME_KEY = 'taskManagerTheme';
   const reminderTimers = {};
+  let allTasks = [];
 
   const $ = id => document.getElementById(id);
 
@@ -22,13 +22,22 @@
   const themeIcon = $('themeIcon');
   const toast = $('toast');
 
+  // ---- Firebase Init ----
+  const firebaseConfig = {
+    apiKey: "AIzaSyDqrKCtRct2OY23uN_HzryY59o9JVZbHbc",
+    authDomain: "task-manager-d51df.firebaseapp.com",
+    databaseURL: "https://task-manager-d51df-default-rtdb.firebaseio.com",
+    projectId: "task-manager-d51df",
+    storageBucket: "task-manager-d51df.firebasestorage.app",
+    messagingSenderId: "466475661819",
+    appId: "1:466475661819:web:73cb9e3bd68d40844cb35e"
+  };
+  firebase.initializeApp(firebaseConfig);
+  const db = firebase.database();
+
   // ---- Storage ----
-  function loadTasks() {
-    try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; }
-    catch { return []; }
-  }
   function saveTasks(tasks) {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks));
+    db.ref("tasks").set(tasks);
   }
 
   // ---- Theme ----
@@ -82,8 +91,8 @@
       const t0 = audioCtx.currentTime;
       for (let i = 0; i < 4; i++) {
         const start = t0 + i * 0.55;
-        beep(987.77, start, 0.32, 0.38); // B5
-        beep(659.25, start + 0.18, 0.32, 0.32); // E5
+        beep(987.77, start, 0.32, 0.38);
+        beep(659.25, start + 0.18, 0.32, 0.32);
       }
     } catch (e) {}
   }
@@ -93,12 +102,11 @@
   function clearReminder(id) {
     if (reminderTimers[id]) { clearTimeout(reminderTimers[id]); delete reminderTimers[id]; }
   }
-  function markReminded(task) {
-    const tasks = loadTasks();
-    const idx = tasks.findIndex(t => t.id === task.id);
+  function markReminded(taskId) {
+    const idx = allTasks.findIndex(t => t.id === taskId);
     if (idx !== -1) {
-      tasks[idx].reminded = true;
-      saveTasks(tasks);
+      allTasks[idx].reminded = true;
+      saveTasks(allTasks);
     }
   }
   function fireReminder(task) {
@@ -107,7 +115,7 @@
     if (Notification.permission === 'granted') {
       new Notification('Task Reminder', { body: `"${task.title}" deadline dalam ${task.reminderMinutes} menit!` });
     }
-    markReminded(task);
+    markReminded(task.id);
   }
   function scheduleReminder(task) {
     clearReminder(task.id);
@@ -117,7 +125,7 @@
     const remindAt = deadline - task.reminderMinutes * 60 * 1000;
     if (remindAt > now) {
       reminderTimers[task.id] = setTimeout(() => {
-        const t = loadTasks().find(x => x.id === task.id);
+        const t = allTasks.find(x => x.id === task.id);
         if (t && t.status !== 'done' && !t.reminded && Date.now() < new Date(t.deadline).getTime()) {
           fireReminder(t);
         }
@@ -130,10 +138,10 @@
     const status = filterStatus.value;
     const priority = filterPriority.value;
     const search = filterSearch.value.toLowerCase().trim();
-    return loadTasks().filter(t => {
+    return allTasks.filter(t => {
       if (status !== 'all' && t.status !== status) return false;
       if (priority !== 'all' && t.priority !== priority) return false;
-      if (search && !t.title.toLowerCase().includes(search) && !t.description.toLowerCase().includes(search)) return false;
+      if (search && !t.title.toLowerCase().includes(search) && !(t.description || '').toLowerCase().includes(search)) return false;
       return true;
     });
   }
@@ -167,7 +175,6 @@
 
   function render() {
     const tasks = getFilteredTasks();
-    const allTasks = loadTasks();
 
     // Stats
     $('statTodo').querySelector('.stat-num').textContent = allTasks.filter(t => t.status === 'todo').length;
@@ -189,7 +196,6 @@
     }
     emptyMsg.style.display = 'none';
 
-    // Sort: overdue first, then by deadline
     tasks.sort((a, b) => {
       if (a.status === 'done' && b.status !== 'done') return 1;
       if (a.status !== 'done' && b.status === 'done') return -1;
@@ -234,7 +240,6 @@
     const title = taskTitle.value.trim();
     if (!title) return;
 
-    const tasks = loadTasks();
     const task = {
       id: Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
       title,
@@ -245,14 +250,13 @@
       reminderMinutes: parseInt(taskReminder.value) || 30,
       createdAt: new Date().toISOString()
     };
-    tasks.unshift(task);
-    saveTasks(tasks);
+    allTasks.unshift(task);
+    saveTasks(allTasks);
     scheduleReminder(task);
     taskForm.reset();
     taskPriority.value = 'medium';
     taskStatus.value = 'todo';
     taskReminder.value = '30';
-    render();
     showToast('Task berhasil ditambahkan!');
   });
 
@@ -260,33 +264,28 @@
     const btn = e.target.closest('button');
     if (!btn) return;
     const id = btn.dataset.id;
-    const tasks = loadTasks();
-    const idx = tasks.findIndex(t => t.id === id);
+    const idx = allTasks.findIndex(t => t.id === id);
     if (idx === -1) return;
 
     if (btn.classList.contains('btn-delete')) {
       clearReminder(id);
-      tasks.splice(idx, 1);
-      saveTasks(tasks);
-      render();
+      allTasks.splice(idx, 1);
+      saveTasks(allTasks);
       showToast('Task dihapus.');
     } else if (btn.classList.contains('btn-start')) {
-      tasks[idx].status = 'in-progress';
-      saveTasks(tasks);
-      scheduleReminder(tasks[idx]);
-      render();
+      allTasks[idx].status = 'in-progress';
+      saveTasks(allTasks);
+      scheduleReminder(allTasks[idx]);
       showToast('Task dimulai!');
     } else if (btn.classList.contains('btn-done')) {
-      tasks[idx].status = 'done';
+      allTasks[idx].status = 'done';
       clearReminder(id);
-      saveTasks(tasks);
-      render();
+      saveTasks(allTasks);
       showToast('Task selesai!');
     } else if (btn.classList.contains('btn-todo')) {
-      tasks[idx].status = 'todo';
-      saveTasks(tasks);
-      scheduleReminder(tasks[idx]);
-      render();
+      allTasks[idx].status = 'todo';
+      saveTasks(allTasks);
+      scheduleReminder(allTasks[idx]);
       showToast('Task dikembalikan ke Todo.');
     }
   });
@@ -300,8 +299,11 @@
     Notification.requestPermission();
   }
 
-  // ---- Init ----
+  // ---- Init Firebase & Real-time Sync ----
   initTheme();
-  loadTasks().forEach(scheduleReminder);
-  render();
+  db.ref("tasks").on("value", snap => {
+    allTasks = snap.val() || [];
+    allTasks.forEach(scheduleReminder);
+    render();
+  });
 })();
