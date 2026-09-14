@@ -71,9 +71,63 @@
 
   // ---- Alarm Sound ----
   let audioCtx = null;
-  let audioPrimed = false;
   let wakeLock = null;
+  let alarmAudio = null;
+  let vibrateTimer = null;
   const alarmGains = new Set();
+  function makeAlarmWav() {
+    const sampleRate = 8000;
+    const beepDur = 0.45;
+    const gap = 0.12;
+    const beeps = 2;
+    const numSamples = Math.ceil(sampleRate * (beepDur + gap) * beeps);
+    const dv = new DataView(new ArrayBuffer(44 + numSamples * 2));
+    const w = (off, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(off + i, s.charCodeAt(i)); };
+    w(0, 'RIFF');
+    dv.setUint32(4, 36 + numSamples * 2, true);
+    w(8, 'WAVE');
+    w(12, 'fmt ');
+    dv.setUint32(16, 16, true);
+    dv.setUint16(20, 1, true);
+    dv.setUint16(22, 1, true);
+    dv.setUint32(24, sampleRate, true);
+    dv.setUint32(28, sampleRate * 2, true);
+    dv.setUint16(32, 2, true);
+    dv.setUint16(34, 16, true);
+    w(36, 'data');
+    dv.setUint32(40, numSamples * 2, true);
+    for (let i = 0; i < numSamples; i++) {
+      const tl = i / sampleRate;
+      const phase = Math.floor(tl / (beepDur + gap));
+      const t = tl - phase * (beepDur + gap);
+      let v = 0;
+      if (t < beepDur) {
+        const freq = phase % 2 === 0 ? 1046.5 : 783.99;
+        const env = Math.min(t / 0.03, 1) * Math.min((beepDur - t) / 0.06, 1);
+        v = Math.sin(2 * Math.PI * freq * t) * env * 0.6;
+      }
+      dv.setInt16(44 + i * 2, Math.max(-32768, Math.min(32767, v * 32767)), true);
+    }
+    const bytes = new Uint8Array(dv.buffer);
+    let binary = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    }
+    return 'data:audio/wav;base64,' + btoa(binary);
+  }
+  function createAlarmAudio() {
+    if (alarmAudio) return alarmAudio;
+    if (!('Audio' in window)) return null;
+    try {
+      alarmAudio = new Audio(makeAlarmWav());
+      alarmAudio.loop = true;
+      alarmAudio.preload = 'auto';
+      if (alarmAudio.setAttribute) alarmAudio.setAttribute('playsinline', '');
+    } catch (e) {
+      alarmAudio = null;
+    }
+    return alarmAudio;
+  }
   function ensureAudio() {
     const AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) return Promise.resolve(false);
@@ -84,17 +138,6 @@
       return audioCtx.resume().then(() => true).catch(() => false);
     }
     return Promise.resolve(true);
-  }
-  function playSilentBlock() {
-    if (!audioCtx || audioCtx.state !== 'running' || audioPrimed) return;
-    audioPrimed = true;
-    try {
-      const buf = audioCtx.createBuffer(1, 1, 22050);
-      const src = audioCtx.createBufferSource();
-      src.buffer = buf;
-      src.connect(audioCtx.destination);
-      src.start(0);
-    } catch (e) {}
   }
   function requestNotificationPermission() {
     if ('Notification' in window && Notification.permission === 'default') {
@@ -150,7 +193,6 @@
     if (navigator.vibrate) navigator.vibrate(0);
   }
   function playAlarmChime() {
-    vibrateAlarm();
     ensureAudio().then(active => {
       if (!audioCtx || !active) { updateAlarmHint(); return; }
       const t0 = audioCtx.currentTime;
@@ -163,18 +205,43 @@
       } catch (e) {}
     });
   }
-  function unlockAndRing() {
-    requestNotificationPermission();
-    ensureAudio().then(active => {
-      if (!active) { updateAlarmHint(); return; }
-      playSilentBlock();
-      if (alarmState.ringing) startAlarmSound();
-      updateAlarmHint();
-    });
+  function startVibrating() {
+    stopVibrating();
+    vibrateAlarm();
+    if (navigator.vibrate) vibrateTimer = setInterval(vibrateAlarm, 3000);
   }
-  document.addEventListener('pointerdown', unlockAndRing);
-  document.addEventListener('touchstart', unlockAndRing);
-  document.addEventListener('keydown', unlockAndRing);
+  function stopVibrating() {
+    if (vibrateTimer) { clearInterval(vibrateTimer); vibrateTimer = null; }
+    stopVibration();
+  }
+  function unlockAlarmAudio() {
+    const audio = createAlarmAudio();
+    if (!audio) return;
+    if (alarmState.ringing) {
+      const p = audio.play();
+      if (p && typeof p.catch === 'function') p.catch(() => {});
+      return;
+    }
+    audio.volume = 0;
+    const p = audio.play();
+    const done = () => { audio.pause(); audio.currentTime = 0; };
+    if (p && typeof p.then === 'function') {
+      p.then(done).catch(() => {}).then(() => { audio.volume = 1; });
+    } else {
+      done();
+      audio.volume = 1;
+    }
+  }
+  function handleUserGesture() {
+    unlockAlarmAudio();
+    requestNotificationPermission();
+    if (alarmState.ringing) startAlarmSound();
+  }
+  document.addEventListener('pointerdown', handleUserGesture);
+  document.addEventListener('touchstart', handleUserGesture);
+  document.addEventListener('touchend', handleUserGesture);
+  document.addEventListener('keydown', handleUserGesture);
+  document.addEventListener('click', handleUserGesture);
 
   // ---- Alarm Overlay ----
   let alarmModal = $('alarmModal');
@@ -186,7 +253,7 @@
   let alarmDoneBtn = $('alarmDone');
   const alarmQueue = [];
   const alarmState = { ringing: false, current: null };
-  let alarmSoundTimer = null;
+  let alarmWebTimer = null;
 
   function ensureAlarmUI() {
     if (alarmModal && alarmDoneBtn) return;
@@ -243,19 +310,42 @@ body.dark .alarm-box{background:#37242f}
 
   function updateAlarmHint() {
     if (!hasAlarmUI) return;
+    const playing = !!(alarmAudio && !alarmAudio.paused);
     const active = !!(audioCtx && audioCtx.state === 'running');
-    alarmHintEl.hidden = active || !alarmState.ringing;
+    alarmHintEl.hidden = (playing || active) || !alarmState.ringing;
   }
 
-  function startAlarmSound() {
-    stopAlarmSound();
+  function startWebChime() {
+    if (alarmWebTimer) { clearInterval(alarmWebTimer); alarmWebTimer = null; }
     playAlarmChime();
-    alarmSoundTimer = setInterval(playAlarmChime, 2500);
+    alarmWebTimer = setInterval(playAlarmChime, 2500);
+  }
+  function stopWebChime() {
+    if (alarmWebTimer) { clearInterval(alarmWebTimer); alarmWebTimer = null; }
+    stopAllBeeps();
+  }
+  function startAlarmSound() {
+    startVibrating();
+    const audio = createAlarmAudio();
+    if (!audio) { startWebChime(); return; }
+    try {
+      const p = audio.play();
+      if (p && typeof p.catch === 'function') {
+        p.then(() => updateAlarmHint()).catch(() => startWebChime());
+      } else {
+        startWebChime();
+      }
+    } catch (e) {
+      startWebChime();
+    }
+    updateAlarmHint();
   }
   function stopAlarmSound() {
-    if (alarmSoundTimer) { clearInterval(alarmSoundTimer); alarmSoundTimer = null; }
-    stopAllBeeps();
-    stopVibration();
+    if (alarmAudio) {
+      try { alarmAudio.pause(); alarmAudio.currentTime = 0; } catch (e) {}
+    }
+    stopWebChime();
+    stopVibrating();
   }
   function showAlarm(title, taskName, message) {
     if (!hasAlarmUI) {
@@ -269,7 +359,6 @@ body.dark .alarm-box{background:#37242f}
     alarmModal.hidden = false;
     requestWakeLock();
     startAlarmSound();
-    unlockAndRing();
     updateAlarmHint();
   }
   function hideAlarm() {
@@ -335,7 +424,8 @@ body.dark .alarm-box{background:#37242f}
     stopCurrentAlarm();
   });
   if (alarmSoundBtn) alarmSoundBtn.addEventListener('click', () => {
-    unlockAndRing();
+    unlockAlarmAudio();
+    startAlarmSound();
     showToast('Alarm dibunyikan.');
   });
 
