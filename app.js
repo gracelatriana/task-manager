@@ -54,6 +54,12 @@
     applyTheme(!document.body.classList.contains('dark'));
   });
 
+  const testAlarmBtn = $('testAlarm');
+  if (testAlarmBtn) testAlarmBtn.addEventListener('click', () => {
+    queueAlarm({ id: 'test', title: 'Tes Alarm', reminderMinutes: 0 }, 'test');
+    showToast('Alarm dicoba! Tekan DONE untuk menghentikan.');
+  });
+
   // ---- Toast ----
   let toastTimeout;
   function showToast(msg, type = '') {
@@ -65,6 +71,9 @@
 
   // ---- Alarm Sound ----
   let audioCtx = null;
+  let audioPrimed = false;
+  let wakeLock = null;
+  const alarmGains = new Set();
   function ensureAudio() {
     const AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) return Promise.resolve(false);
@@ -76,6 +85,37 @@
     }
     return Promise.resolve(true);
   }
+  function playSilentBlock() {
+    if (!audioCtx || audioCtx.state !== 'running' || audioPrimed) return;
+    audioPrimed = true;
+    try {
+      const buf = audioCtx.createBuffer(1, 1, 22050);
+      const src = audioCtx.createBufferSource();
+      src.buffer = buf;
+      src.connect(audioCtx.destination);
+      src.start(0);
+    } catch (e) {}
+  }
+  function requestNotificationPermission() {
+    if ('Notification' in window && Notification.permission === 'default') {
+      try { Notification.requestPermission(); } catch (e) {}
+    }
+  }
+  function requestWakeLock() {
+    if (!('wakeLock' in navigator) || wakeLock) return;
+    try {
+      const p = navigator.wakeLock.request('screen');
+      if (p && typeof p.then === 'function') {
+        p.then(l => { wakeLock = l; }).catch(() => {});
+      }
+    } catch (e) {}
+  }
+  function releaseWakeLock() {
+    if (!wakeLock) return;
+    const l = wakeLock;
+    wakeLock = null;
+    l.release().catch(() => {});
+  }
   function beep(freq, startTime, dur, vol = 0.35) {
     if (!audioCtx) return;
     const osc = audioCtx.createOscillator();
@@ -86,8 +126,22 @@
     gain.gain.exponentialRampToValueAtTime(vol, startTime + 0.02);
     gain.gain.exponentialRampToValueAtTime(0.0001, startTime + dur);
     osc.connect(gain).connect(audioCtx.destination);
+    alarmGains.add(gain);
+    osc.addEventListener('ended', () => alarmGains.delete(gain));
     osc.start(startTime);
     osc.stop(startTime + dur + 0.05);
+  }
+  function stopAllBeeps() {
+    if (!audioCtx || alarmGains.size === 0) return;
+    const t = audioCtx.currentTime;
+    alarmGains.forEach(g => {
+      try {
+        g.gain.cancelScheduledValues(t);
+        g.gain.setValueAtTime(g.gain.value, t);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + 0.05);
+      } catch (e) {}
+    });
+    alarmGains.clear();
   }
   function vibrateAlarm() {
     if (navigator.vibrate) navigator.vibrate([200, 100, 200, 100, 350]);
@@ -110,8 +164,11 @@
     });
   }
   function unlockAndRing() {
+    requestNotificationPermission();
     ensureAudio().then(active => {
-      if (active && alarmState.ringing) startAlarmSound();
+      if (!active) { updateAlarmHint(); return; }
+      playSilentBlock();
+      if (alarmState.ringing) startAlarmSound();
       updateAlarmHint();
     });
   }
@@ -120,17 +177,69 @@
   document.addEventListener('keydown', unlockAndRing);
 
   // ---- Alarm Overlay ----
-  const alarmModal = $('alarmModal');
-  const alarmDoneBtn = $('alarmDone');
-  const alarmSoundBtn = $('alarmSound');
-  const alarmTaskTitleEl = $('alarmTaskTitle');
-  const hasAlarmUI = !!(alarmModal && alarmDoneBtn);
-  const alarmTitleEl = hasAlarmUI ? $('alarmTitle') : null;
-  const alarmMsgEl = hasAlarmUI ? $('alarmMsg') : null;
-  const alarmHintEl = hasAlarmUI ? $('alarmHint') : null;
+  let alarmModal = $('alarmModal');
+  let alarmTitleEl = $('alarmTitle');
+  let alarmTaskTitleEl = $('alarmTaskTitle');
+  let alarmMsgEl = $('alarmMsg');
+  let alarmHintEl = $('alarmHint');
+  let alarmSoundBtn = $('alarmSound');
+  let alarmDoneBtn = $('alarmDone');
   const alarmQueue = [];
   const alarmState = { ringing: false, current: null };
   let alarmSoundTimer = null;
+
+  function ensureAlarmUI() {
+    if (alarmModal && alarmDoneBtn) return;
+    const css = `
+.alarm-modal{position:fixed;top:0;left:0;right:0;bottom:0;height:100vh;height:100dvh;background:rgba(36,23,33,.55);backdrop-filter:blur(4px);display:flex;overflow-y:auto;overscroll-behavior:contain;z-index:999;padding:1.2rem}
+.alarm-modal[hidden]{display:none}
+.alarm-box{margin:auto;width:100%;max-width:380px;background:#fff;border-radius:22px;padding:1.7rem 1.6rem 1.4rem;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.35);border:2px solid var(--accent-deep);animation:alarmPulse 1.1s ease-in-out infinite}
+body.dark .alarm-box{background:#37242f}
+@keyframes alarmPulse{0%,100%{transform:scale(1)}50%{transform:scale(1.03)}}
+.alarm-icon{font-size:2.6rem;margin-bottom:.5rem;animation:alarmSwing 1s ease-in-out infinite}
+@keyframes alarmSwing{0%,100%{transform:rotate(-10deg)}50%{transform:rotate(10deg)}}
+.alarm-box h2{font-size:1.25rem;font-weight:800;margin-bottom:.5rem;color:var(--accent-deep)}
+.alarm-task-title{font-size:1.15rem;font-weight:800;color:var(--text);background:var(--accent-soft);border:1.5px dashed var(--accent);border-radius:12px;padding:.7rem 1rem;margin-bottom:1rem;word-break:break-word}
+#alarmMsg{font-size:.9rem;color:var(--text-muted);margin-bottom:1rem;line-height:1.5}
+.alarm-hint{font-size:.78rem;font-weight:700;color:var(--warning);margin-bottom:1rem}
+.alarm-hint[hidden]{display:none}
+.alarm-actions{display:flex;flex-direction:column;gap:.7rem}
+.alarm-sound-btn{padding:.8rem;background:var(--accent-soft);color:var(--accent-deep);border:1.5px solid var(--accent);border-radius:12px;font-size:.95rem;font-weight:700;cursor:pointer}
+.alarm-sound-btn:hover{transform:translateY(-2px)}
+.alarm-done-btn{padding:1.2rem;background:linear-gradient(135deg,#35c98d,#1fae76);color:#fff;border:none;border-radius:16px;font-size:1.35rem;font-weight:900;cursor:pointer;letter-spacing:.03em;box-shadow:0 6px 20px rgba(53,201,141,.4)}
+.alarm-done-btn:hover{transform:translateY(-2px)}
+.alarm-done-btn:active{transform:translateY(0) scale(.98)}
+`;
+    const styleTag = document.createElement('style');
+    styleTag.textContent = css;
+    document.head.appendChild(styleTag);
+    const overlay = document.createElement('div');
+    overlay.id = 'alarmModal';
+    overlay.className = 'alarm-modal';
+    overlay.hidden = true;
+    overlay.innerHTML = `
+      <div class="alarm-box">
+        <div class="alarm-icon">&#9203;</div>
+        <h2 id="alarmTitle">Alarm Deadline</h2>
+        <h3 id="alarmTaskTitle" class="alarm-task-title"></h3>
+        <p id="alarmMsg"></p>
+        <p id="alarmHint" class="alarm-hint">Tap layar atau tekan &#128276; Bunyikan Suara supaya alarm berbunyi di HP.</p>
+        <div class="alarm-actions">
+          <button id="alarmSound" class="alarm-sound-btn">&#128276; Bunyikan Suara</button>
+          <button id="alarmDone" class="alarm-done-btn">&#10003; DONE</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    alarmModal = overlay;
+    alarmTitleEl = $('alarmTitle');
+    alarmTaskTitleEl = $('alarmTaskTitle');
+    alarmMsgEl = $('alarmMsg');
+    alarmHintEl = $('alarmHint');
+    alarmSoundBtn = $('alarmSound');
+    alarmDoneBtn = $('alarmDone');
+  }
+  ensureAlarmUI();
+  const hasAlarmUI = !!(alarmModal && alarmDoneBtn);
 
   function updateAlarmHint() {
     if (!hasAlarmUI) return;
@@ -145,6 +254,7 @@
   }
   function stopAlarmSound() {
     if (alarmSoundTimer) { clearInterval(alarmSoundTimer); alarmSoundTimer = null; }
+    stopAllBeeps();
     stopVibration();
   }
   function showAlarm(title, taskName, message) {
@@ -157,12 +267,15 @@
     alarmTaskTitleEl.textContent = taskName;
     alarmMsgEl.textContent = message;
     alarmModal.hidden = false;
+    requestWakeLock();
     startAlarmSound();
+    unlockAndRing();
     updateAlarmHint();
   }
   function hideAlarm() {
     if (alarmModal) alarmModal.hidden = true;
     stopAlarmSound();
+    releaseWakeLock();
     updateAlarmHint();
   }
   function ringNext() {
@@ -179,14 +292,19 @@
     }
   }
   function queueAlarm(task, type) {
+    if (alarmState.current && alarmState.current.taskId === task.id) return;
+    if (alarmQueue.some(a => a.taskId === task.id)) return;
     const overdue = type === 'overdue';
+    const isTest = type === 'test';
     alarmQueue.push({
       taskId: task.id,
-      title: overdue ? 'Deadline Terlewat' : 'Reminder Deadline',
+      title: overdue ? 'Deadline Terlewat' : (isTest ? 'Tes Alarm' : 'Reminder Deadline'),
       name: task.title,
-      message: overdue
-        ? `Task ini sudah melewati deadline. Alarm akan berhenti setelah kamu menekan DONE.`
-        : `Deadline dalam ${task.reminderMinutes} menit. Alarm akan berhenti setelah kamu menekan DONE.`
+      message: isTest
+        ? 'Ini alarm percobaan. Tekan DONE untuk menghentikan alarm.'
+        : overdue
+          ? 'Task ini sudah melewati deadline. Alarm akan berhenti setelah kamu menekan DONE.'
+          : `Deadline dalam ${task.reminderMinutes} menit. Alarm akan berhenti setelah kamu menekan DONE.`
     });
     ringNext();
   }
@@ -207,10 +325,10 @@
     if (current) {
       const idx = allTasks.findIndex(t => t.id === current.taskId);
       if (idx !== -1) {
-        allTasks[idx].status = 'done';
+        allTasks[idx].reminded = true;
         clearReminder(current.taskId);
         saveTasks(allTasks);
-        showToast('Task selesai!');
+        showToast('Alarm dihentikan.');
       }
     }
     closeTaskNotifications(current);
@@ -225,18 +343,11 @@
   function clearReminder(id) {
     if (reminderTimers[id]) { clearTimeout(reminderTimers[id]); delete reminderTimers[id]; }
   }
-  function markReminded(taskId) {
-    const idx = allTasks.findIndex(t => t.id === taskId);
-    if (idx !== -1) {
-      allTasks[idx].reminded = true;
-      saveTasks(allTasks);
-    }
-  }
   function fireReminder(task, type = 'upcoming') {
     queueAlarm(task, type);
-    markReminded(task.id);
   }
   function checkDueReminders() {
+    if (alarmState.ringing) return;
     const now = Date.now();
     allTasks.forEach(t => {
       if (!t.deadline || t.status === 'done' || t.reminded) return;
@@ -406,6 +517,7 @@
       showToast('Task dihapus.');
     } else if (btn.classList.contains('btn-start')) {
       allTasks[idx].status = 'in-progress';
+      allTasks[idx].reminded = false;
       saveTasks(allTasks);
       scheduleReminder(allTasks[idx]);
       showToast('Task dimulai!');
@@ -416,6 +528,7 @@
       showToast('Task selesai!');
     } else if (btn.classList.contains('btn-todo')) {
       allTasks[idx].status = 'todo';
+      allTasks[idx].reminded = false;
       saveTasks(allTasks);
       scheduleReminder(allTasks[idx]);
       showToast('Task dikembalikan ke Todo.');
@@ -441,13 +554,22 @@
   });
 
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) {
-      checkDueReminders();
-      allTasks.forEach(scheduleReminder);
-      render();
+    if (document.hidden) {
+      releaseWakeLock();
+      return;
     }
+    if (alarmState.ringing) { startAlarmSound(); requestWakeLock(); }
+    checkDueReminders();
+    allTasks.forEach(scheduleReminder);
+    render();
+  });
+  window.addEventListener('pageshow', () => {
+    if (alarmState.ringing) { startAlarmSound(); requestWakeLock(); }
+    checkDueReminders();
+    allTasks.forEach(scheduleReminder);
   });
   window.addEventListener('focus', () => {
+    if (alarmState.ringing) { startAlarmSound(); requestWakeLock(); }
     checkDueReminders();
     allTasks.forEach(scheduleReminder);
   });
